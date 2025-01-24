@@ -1,19 +1,53 @@
-import system
+variant: fcos
+version: 1.0.0
+passwd:
+  users:
+    - name: kewar
+      groups:
+        - "sudo"
+        - "docker"
+      password_hash: $y$j9T$9H7AIcssGz474at7KQPJo1$m3YxfVGb/8GSMLC4IEGmN4hvyyW/297792kxMjHaZp/
 
-# Define the username and password
-username = "core"
-password = "password123"  # Please change this to a strong password!
+systemd:
+  units:
+    - name: docker.service
+      enabled: true
 
-# Create the user
-try:
-  system.user.addUser(username, password, ["users"])
-  print(f"User '{username}' created successfully.")
-except Exception as e:
-  print(f"Error creating user: {e}")
-
-# Allow SSH access for the user
-try:
-  system.user.editUser(username, password, ["users"], True)
-  print(f"SSH access enabled for user '{username}'.")
-except Exception as e:
-  print(f"Error enabling SSH access: {e}")
+    - name: containerd.service
+      enabled: true
+    - name: serial-getty@ttyS0.service
+      dropins:
+      - name: autologin-core.conf
+        contents: |
+          [Service]
+          # Override Execstart in main unit
+          ExecStart=
+          # Add new Execstart with `-` prefix to ignore failure
+          ExecStart=-/usr/sbin/agetty --autologin admin --noclear %I $TERM
+          TTYVTDisallocate=no          
+storage:
+  files:
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: |
+          CoreOS          
+    - path: /etc/profile.d/systemd-pager.sh
+      mode: 0644
+      contents:
+        inline: |
+          # Tell systemd to not use a pager when printing information
+          export SYSTEMD_PAGER=cat          
+    - path: /etc/sysctl.d/20-silence-audit.conf
+      mode: 0644
+      contents:
+        inline: |
+          # Raise console message logging level from DEBUG (7) to WARNING (4)
+          # to hide audit messages from the interactive console
+          kernel.printk=4          
+    - path: /etc/ssh/sshd_config.d/20-enable-passwords.conf
+      mode: 0644
+      contents:
+        inline: |
+          # Enable SSH password login
+          PasswordAuthentication yes         
