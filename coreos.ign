@@ -1,0 +1,19 @@
+import system
+
+# Define the username and password
+username = "core"
+password = "password123"  # Please change this to a strong password!
+
+# Create the user
+try:
+  system.user.addUser(username, password, ["users"])
+  print(f"User '{username}' created successfully.")
+except Exception as e:
+  print(f"Error creating user: {e}")
+
+# Allow SSH access for the user
+try:
+  system.user.editUser(username, password, ["users"], True)
+  print(f"SSH access enabled for user '{username}'.")
+except Exception as e:
+  print(f"Error enabling SSH access: {e}")
