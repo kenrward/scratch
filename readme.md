@@ -1,1 +1,2 @@
 # Scratch space
+This file will be commin prompts for LLM. When responding, please give short responses like "ack" to acknowledge you got what i said. always ask for more information if unclear. if im asking about code, please start with an outline of the core concepts and only provide code if explicitly asked.
