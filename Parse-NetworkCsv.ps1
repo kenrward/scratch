@@ -254,11 +254,11 @@ Write-Log "Loaded $($raw.Count) rows from CSV"
 $activeNetworks = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 foreach ($row in $raw) {
-    $disabledVal = if ($null -ne $row.disabled)    { $row.disabled.Trim() }    else { '' }
-    $address     = if ($null -ne $row.address)     { $row.address.Trim() }     else { '' }
-    $netmask     = if ($null -ne $row.netmask)     { $row.netmask.Trim() }     else { '' }
-    $domain      = if ($null -ne $row.domain_name) { $row.domain_name.Trim() } else { '' }
-    $site        = if ($null -ne $row.'EA-Site')    { $row.'EA-Site'.Trim() }    else { '' }
+    $disabledVal = if ($row.PSObject.Properties['disabled'])    { $row.disabled.Trim() }    else { '' }
+    $address     = if ($row.PSObject.Properties['address'])     { $row.address.Trim() }     else { '' }
+    $netmask     = if ($row.PSObject.Properties['netmask'])     { $row.netmask.Trim() }     else { '' }
+    $domain      = if ($row.PSObject.Properties['domain_name']) { $row.domain_name.Trim() } else { '' }
+    $site        = if ($row.PSObject.Properties['EA-Site'])     { $row.'EA-Site'.Trim() }   else { '' }
 
     if ($disabledVal -ine 'FALSE') { continue }
 
