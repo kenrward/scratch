@@ -101,7 +101,7 @@ function Ensure-GroupExists {
 
     Write-Log "Checking if group '$GroupName' exists..."
     $filterValue = '[{"id":"name","includeValues":["' + $GroupName + '"],"excludeValues":[]}]'
-    $encodedFilter = [System.Web.HttpUtility]::UrlEncode($filterValue)
+    $encodedFilter = [System.Uri]::EscapeDataString($filterValue)
     $checkGroupUri = "$BaseApiUrl/groups/custom?_limit=1&_filters=$encodedFilter"
 
     $existingGroupResponse = Invoke-RestMethod -Uri $checkGroupUri -Method Get -Headers $Headers
@@ -196,7 +196,7 @@ function Resolve-NetworkAssetId {
     )
 
     # URL-encode the CIDR so 10.20.51.0/24 becomes 10.20.51.0%2F24
-    $encodedCIDR = [System.Web.HttpUtility]::UrlEncode($CIDR)
+    $encodedCIDR = [System.Uri]::EscapeDataString($CIDR)
     $candidateUri = "$BaseApiUrl/groups/custom/member-candidates?_search=$encodedCIDR&_limit=100&_offset=0"
 
     try {
