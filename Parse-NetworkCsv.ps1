@@ -254,13 +254,13 @@ Write-Log "Loaded $($raw.Count) rows from CSV"
 $activeNetworks = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 foreach ($row in $raw) {
-    $disabledVal = if ($row.PSObject.Properties['disabled'])    { $row.disabled.Trim() }    else { '' }
-    $address     = if ($row.PSObject.Properties['address'])     { $row.address.Trim() }     else { '' }
-    $netmask     = if ($row.PSObject.Properties['netmask'])     { $row.netmask.Trim() }     else { '' }
-    $domain      = if ($row.PSObject.Properties['domain_name']) { $row.domain_name.Trim() } else { '' }
-    $site        = if ($row.PSObject.Properties['EA-Site'])     { $row.'EA-Site'.Trim() }   else { '' }
+    $disabledVal = if ($row.PSObject.Properties['disabled'])    { ([string]$row.disabled).Trim() }    else { '' }
+    $address     = if ($row.PSObject.Properties['address'])     { ([string]$row.address).Trim() }     else { '' }
+    $netmask     = if ($row.PSObject.Properties['netmask'])     { ([string]$row.netmask).Trim() }     else { '' }
+    $domain      = if ($row.PSObject.Properties['domain_name']) { ([string]$row.domain_name).Trim() } else { '' }
+    $site        = if ($row.PSObject.Properties['EA-Site'])     { ([string]$row.'EA-Site').Trim() }   else { '' }
 
-    if ($disabledVal -ine 'FALSE') { continue }
+    if ($disabledVal -ine 'FALSE' -and $disabledVal -ne '') { continue }
 
     if ([string]::IsNullOrWhiteSpace($address) -or [string]::IsNullOrWhiteSpace($netmask)) {
         Write-Verbose "Skipping row with empty address or netmask"
