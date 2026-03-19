@@ -26,7 +26,7 @@
     making any API calls.
  
 .EXAMPLE
-    .\Parse-NetworkCsv.ps1 -CsvPath './dl-nets-export-20250126.csv' `
+    .\Create-SiteGroups.ps1 -CsvPath './dl-nets-export-20250126.csv' `
         -BaseApiUrl 'https://portal.zeronetworks.com/api/v1' `
         -ApiKey 'your_api_key' -WhatIf
 #>
@@ -180,12 +180,61 @@ function Verify-GroupExists {
     return $false
 }
  
+function Get-ExistingGroupMembers {
+    <#
+    .SYNOPSIS
+        Returns the set of asset IDs already in a custom group.
+        Used to make re-runs idempotent -- we only PUT net-new members.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$GroupID,
+
+        [Parameter(Mandatory)]
+        [string]$BaseApiUrl,
+
+        [Parameter(Mandatory)]
+        [hashtable]$Headers
+    )
+
+    $existingIds = [System.Collections.Generic.HashSet[string]]::new()
+    $offset      = 0
+    $limit       = 400   # fetch in pages to handle large groups
+
+    do {
+        $uri      = "$BaseApiUrl/groups/custom/$GroupID/members?_limit=$limit&_offset=$offset"
+        $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $Headers
+
+        $page = @($response.items)
+        foreach ($item in $page) {
+            if ($null -ne $item.id -and $item.id -ne '') {
+                [void]$existingIds.Add([string]$item.id)
+            }
+        }
+
+        $offset += $limit
+    } while ($page.Count -eq $limit)   # keep paging while we got a full page
+
+    return $existingIds
+}
+
 function Resolve-NetworkAssetId {
     <#
     .SYNOPSIS
-        Resolves a CIDR (e.g., 10.20.51.0/24) to a Zero Networks asset ID
-        using the group member-candidates endpoint. Retries on transient
-        errors (429, 502, 503, 504) with exponential backoff.
+        Resolves a CIDR (e.g., 10.20.51.0/24) to a Zero Networks network asset ID.
+
+    .NOTES
+        FIX (cross-site contamination): The member-candidates endpoint does a
+        substring search, so a query for "10.1.0.0/16" can return the group asset
+        "Site_MSP" (which contains that subnet) alongside the actual network object.
+        The original script fell back to the FIRST result when no exact name match
+        was found, silently picking up group assets from other sites.
+
+        Fixes applied:
+          1. Candidates whose entityType indicates a custom group are skipped entirely.
+          2. The "first result" fallback is removed -- if there is no exact name match
+             we return $null rather than risk a wrong ID.
+          3. Exponential back-off for transient 429/502/503/504 errors is retained.
     #>
     param(
         [Parameter(Mandatory)]
@@ -197,31 +246,49 @@ function Resolve-NetworkAssetId {
         [Parameter(Mandatory)]
         [hashtable]$Headers
     )
+
+    # Zero Networks entityType values (verify against your tenant if uncertain):
+    #   1  = Machine / host
+    #   2  = Network segment / subnet   <-- what we want
+    #   3  = Custom group               <-- must be excluded
+    #   4  = Built-in group
+    # Add additional exclusions here if your environment surfaces other types.
+    $excludedEntityTypes = @(3, 4)
  
     $encodedCIDR  = [System.Uri]::EscapeDataString($CIDR)
     $candidateUri = "$BaseApiUrl/groups/custom/member-candidates?_search=$encodedCIDR&_limit=100&_offset=0"
  
-    $maxRetries  = 4
-    $retryDelay  = 2   # seconds; doubles on each retry (2 -> 4 -> 8)
+    $maxRetries = 4
+    $retryDelay = 2   # seconds; doubles on each retry (2 -> 4 -> 8 -> 16)
  
     for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
         try {
             $results = Invoke-RestMethod -Uri $candidateUri -Method Get -Headers $Headers
  
             if ($results.items -and @($results.items).Count -gt 0) {
-                # Prefer an exact name match to avoid partial-match false positives
+
                 foreach ($item in @($results.items)) {
-                    $itemName = if ($null -ne $item.name) { $item.name } else { '' }
+                    $itemName       = if ($null -ne $item.name)       { [string]$item.name }       else { '' }
+                    $itemEntityType = if ($null -ne $item.entityType)  { [int]$item.entityType }    else { -1 }
+
+                    # Skip group-type candidates to prevent cross-site contamination
+                    if ($itemEntityType -in $excludedEntityTypes) {
+                        Write-Verbose "  Skipping group candidate '$itemName' (entityType=$itemEntityType) for CIDR '$CIDR'"
+                        continue
+                    }
+
+                    # Exact name match required -- no fallback to first result
                     if ($itemName -eq $CIDR) {
                         return $item.id
                     }
                 }
-                # Fall back to first result if no exact match
-                Write-Verbose "  No exact name match for '$CIDR'; using first candidate: $(@($results.items)[0].id)"
-                return @($results.items)[0].id
+
+                # No exact non-group match found; log and bail out safely
+                Write-Log "  No exact network asset match for CIDR '$CIDR' (skipping to avoid cross-site contamination)." -Level WARNING
+                return $null
             }
             else {
-                Write-Log "  No member-candidate match for CIDR '$CIDR'." -Level WARNING
+                Write-Log "  No member-candidate results for CIDR '$CIDR'." -Level WARNING
                 return $null
             }
         }
@@ -230,7 +297,7 @@ function Resolve-NetworkAssetId {
             if ($statusCode -in @(429, 502, 503, 504) -and $attempt -lt $maxRetries) {
                 Write-Log "  Transient $statusCode for '$CIDR'. Retry $attempt/$maxRetries in ${retryDelay}s..." -Level WARNING
                 Start-Sleep -Seconds $retryDelay
-                $retryDelay *= 2   # exponential backoff: 2s -> 4s -> 8s
+                $retryDelay *= 2
             }
             else {
                 Write-Log "  Failed to resolve asset ID for CIDR '$CIDR': $($_.Exception.Message)" -Level ERROR
@@ -269,15 +336,12 @@ Write-Log "Loaded $($raw.Count) rows from CSV"
 $activeNetworks = [System.Collections.Generic.List[PSCustomObject]]::new()
  
 foreach ($row in $raw) {
-    # Safe property access: PSObject.Properties check guards against missing columns (StrictMode);
-    # [string] cast guards against null values even when the column exists.
     $disabledVal = if ($row.PSObject.Properties['disabled'])    { ([string]$row.disabled).Trim() }    else { '' }
     $address     = if ($row.PSObject.Properties['address'])     { ([string]$row.address).Trim() }     else { '' }
     $netmask     = if ($row.PSObject.Properties['netmask'])     { ([string]$row.netmask).Trim() }     else { '' }
     $domain      = if ($row.PSObject.Properties['domain_name']) { ([string]$row.domain_name).Trim() } else { '' }
     $site        = if ($row.PSObject.Properties['EA-Site'])     { ([string]$row.'EA-Site').Trim() }   else { '' }
  
-    # Keep only explicitly-enabled networks (disabled = FALSE)
     if ($disabledVal -ine 'FALSE') { continue }
  
     if ([string]::IsNullOrWhiteSpace($address) -or [string]::IsNullOrWhiteSpace($netmask)) {
@@ -381,7 +445,18 @@ foreach ($siteGroup in $bySite) {
         continue
     }
  
-    # (b) Resolve each CIDR to a ZN asset ID via /groups/custom/member-candidates
+    # (b) Fetch existing members to make this run idempotent
+    $existingMemberIds = [System.Collections.Generic.HashSet[string]]::new()
+    try {
+        Write-Log "Fetching existing members for group '$groupName' (ID: $targetGroupID)..."
+        $existingMemberIds = Get-ExistingGroupMembers -GroupID $targetGroupID -BaseApiUrl $BaseApiUrl -Headers $apiHeaders
+        Write-Log "Found $($existingMemberIds.Count) existing member(s) in '$groupName'."
+    }
+    catch {
+        Write-Log "Could not fetch existing members for '$groupName': $($_.Exception.Message). Will proceed but may add duplicates." -Level WARNING
+    }
+
+    # (c) Resolve each CIDR to a ZN asset ID via /groups/custom/member-candidates
     $resolvedAssetIds = [System.Collections.Generic.List[string]]::new()
     $failedResolutions = 0
  
@@ -392,7 +467,6 @@ foreach ($siteGroup in $bySite) {
  
         $assetId = Resolve-NetworkAssetId -CIDR $cidr -BaseApiUrl $BaseApiUrl -Headers $apiHeaders
  
-        # Throttle to avoid overwhelming the API (configurable via -ThrottleMs)
         Start-Sleep -Milliseconds $ThrottleMs
  
         if ($null -ne $assetId -and $assetId -ne '') {
@@ -401,7 +475,7 @@ foreach ($siteGroup in $bySite) {
                 Write-Verbose "  Resolved: $cidr -> $assetId"
             }
             else {
-                Write-Verbose "  Duplicate asset ID for $cidr (already added)"
+                Write-Verbose "  Duplicate asset ID for $cidr (already in resolved list)"
             }
         }
         else {
@@ -410,18 +484,27 @@ foreach ($siteGroup in $bySite) {
     }
  
     Write-Log "Resolved $($resolvedAssetIds.Count) of $($uniqueCidrs.Count) CIDRs ($failedResolutions failed)"
+
+    # (d) Diff: only add IDs not already in the group
+    $newAssetIds = @($resolvedAssetIds | Where-Object { -not $existingMemberIds.Contains($_) })
+
+    if ($newAssetIds.Count -eq 0 -and $resolvedAssetIds.Count -gt 0) {
+        Write-Log "All resolved members are already present in '$groupName'. Nothing to add." -Level SUCCESS
+        Write-Host ""
+        continue
+    }
  
-    # (c) Add resolved asset IDs as members to the group
-    if ($resolvedAssetIds.Count -gt 0) {
-        Write-Log "Adding $($resolvedAssetIds.Count) members to group '$groupName' (ID: $targetGroupID)..."
+    # (e) Add net-new asset IDs as members to the group
+    if ($newAssetIds.Count -gt 0) {
+        Write-Log "Adding $($newAssetIds.Count) new member(s) to group '$groupName' (ID: $targetGroupID) -- $($existingMemberIds.Count) already present..."
         try {
             $addMembersUri  = "$BaseApiUrl/groups/custom/$targetGroupID/members"
             $addMembersBody = @{
-                membersId = $resolvedAssetIds.ToArray()
+                membersId = $newAssetIds
             } | ConvertTo-Json -Depth 5
  
             Invoke-RestMethod -Uri $addMembersUri -Method Put -Headers $apiHeaders -Body $addMembersBody
-            Write-Log "Successfully added $($resolvedAssetIds.Count) members to group '$groupName'." -Level SUCCESS
+            Write-Log "Successfully added $($newAssetIds.Count) member(s) to group '$groupName'." -Level SUCCESS
         }
         catch {
             Write-Log "Exception adding members to '$groupName' (ID: $targetGroupID): $($_.Exception.Message)" -Level ERROR
