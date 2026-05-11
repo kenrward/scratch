@@ -31,7 +31,7 @@ $LinuxProfileId       = "l:c:c64c340e"                                      # e.
 
 $CsvPath   = "C:\Users\12345678\Documents\Zero Network-Linux Scripts\linux-assets.csv"
 $TokenPath = "C:\Users\12345678\Documents\Zero Network-Linux Scripts\token.txt"
-$BaseUri   = "https://dlprod-admin.zeronetworks.com"
+$BaseUri   = "https://znmdlab-admin.zeronetworks.com"
 
 
 # ============================================================
